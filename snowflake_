@@ -1,0 +1,137 @@
+#!/bin/bash
+
+logfile_fallback=/var/log/snowflake.log #if not declared as env.logfile
+
+request=$(basename "$0" | sed 's/^snowflake_//g')
+
+case $1 in
+   config)
+        if [[ ${request} == "sessions" ]];
+        then
+          echo "graph_title Snowflake: Active clients per hour"
+          echo "graph_vlabel clients"
+          echo "sessions.colour 9585FF"
+          echo "sessions.label clients"
+          echo "graph_period hour"
+          exit 0
+        fi
+        if [[ ${request} == "traffic" ]];
+        then
+          echo "graph_order down up"
+          echo "graph_title Snowflake: Traffic per hour"
+          echo "graph_args --base 1000"
+          echo "graph_vlabel bytes in (-) / out (+)"
+          echo "graph_period hour"
+          echo "down.label received"
+          echo "down.graph no"
+          echo "down.draw AREA"
+          echo "down.colour 76D05A"
+          echo "up.label bytes"
+          echo "up.negative down"
+          echo "up.draw AREA"
+          echo "up.colour 66C04A"
+          exit 0
+        fi
+        echo "Unknown method: please create symlinks as snowflake_traffic and/or snowflake_sessions" >&2
+        exit 255;;
+esac
+
+
+
+if [[ -z "${logfile}" ]];
+then
+  logfile=${logfile_fallback}
+fi
+
+if [ ! -f ${logfile} ];
+then
+  echo "Logifle ${logfile} doesn't exist (is it a correct path?)" >&2
+  exit 255
+fi
+
+
+# let's look for the most recent statistics message in the log
+# example: '2022/11/16 15:21:04 In the last 1h0m0s, there were 11 connections. Traffic Relayed <E2><86><91> 38375 KB, <E2><86><93> 5130 KB.'
+lastline=$(tac ${logfile}  2>/dev/null | grep -m 1 "In the last")
+
+# Munin documentation prescribes to output such "specific-time" values like <epoch>:<value>, but for some reason it breaks RRDtool.
+# So we will simply take the time from log and check that it is not too old (it should be logged every 1 hour -> if it is older, that means daemon was stopped or restarted)
+
+# parse datetime
+regex="^(.*\/.*\/.* .*:.*):"
+if [[ $lastline =~ $regex ]]
+then
+  last_log_ts="$(date --utc -d "${BASH_REMATCH[1]}" +%s)"
+  now_ts=$(date --utc +%s)
+  time_passed=$((now_ts-last_log_ts))
+  if [[ $time_passed -gt 3600 ]]; # 3600 sec = 1 hour. Snowflake proxy prints stats every 1 hour
+  then
+    case $request in
+      sessions)
+        echo "sessions.value U"
+        ;;
+      traffic)
+        echo "up.value U"
+        echo "down.value U"
+        ;;
+     esac
+     echo "Last log record is too old" >&2
+     exit 255
+  fi
+fi
+
+
+
+if [[ $request == "sessions" ]];
+then
+  # extract the number of connections
+  regex=".*there were ([0-9]*) connections.*"
+  if [[ $lastline =~ $regex ]]
+  then
+    conns="${BASH_REMATCH[1]}"
+  else
+    echo "Cannot find or parse last statistics record in the ${logfile}" >&2
+    conns="U"
+  fi
+  printf "sessions.value "
+  echo "${conns}"
+  exit 0
+fi
+
+
+if [[ $request == "traffic" ]];
+then
+  # extract the number after "arrow up" symbol: "38375 K"
+  regex=".* ↑ ([0-9]*)"
+  if [[ $lastline =~ $regex ]]
+  then
+    up="${BASH_REMATCH[1]}K"
+    up=$(numfmt --from=iec "${up}") # convert kilobytes/megabytes into bytes
+  else
+    echo "Cannot find or parse last statistics record in ${logfile}" >&2
+    up="U"
+  fi
+  printf "up.value "
+  echo "${up}"
+
+
+  # extract the number after "arrow down" symbol: "5130 K"
+  regex=".* ↓ ([0-9]*)"
+
+  if [[ $lastline =~ $regex ]]
+  then
+    down="${BASH_REMATCH[1]}K"
+    down=$(numfmt --from=iec "${down}")  # convert kilobytes/megabytes into bytes
+  else
+    echo "Cannot find or parse last statistics record in ${SNOWFLAKE_LOGFILE}" >&2
+    down="U"
+  fi
+  printf "down.value "
+  echo "${down}"
+  exit 0
+fi
+
+
+echo "Unknown method: please create symlinks as snowflake_traffic and/or snowflake_sessions" >&2
+exit 255
+

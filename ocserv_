@@ -1,0 +1,127 @@
+#!/bin/bash
+set -Eeo pipefail
+
+old_values_file="/var/run/munin_ocserv"
+
+request=$(basename "$0" | sed 's/^ocserv_//g')
+
+if ! command -v jq &> /dev/null
+then
+    echo "'jq' not found, please install it!"  >&2
+    exit 255
+fi
+
+if [[ $1 == "suggest" ]];
+then
+  echo "bans"
+  echo "traffic"
+  echo "sessions"
+  exit 0
+fi
+
+
+if [[ $1 == "config" ]];
+then
+  case $request in
+   traffic)
+     echo "graph_order down up"
+     echo "graph_title OpenConnect: Traffic"
+     echo "graph_args --base 1000"
+     echo "graph_vlabel bytes in (-) / out (+) per session"
+     echo "down.label received"
+     echo "down.graph no"
+     echo "down.draw LINE2"
+     echo "up.label bytes"
+     echo "up.negative down"
+     echo "up.draw LINE2"
+     exit 0;;
+   sessions)
+     echo "graph_title OpenConnect: Sessions"
+     echo "graph_vlabel sessions"
+     echo "graph_printf %2.0lf"
+     echo "valid.label valid for reconnection"
+     echo "sessions.label active"
+     exit 0;;
+   bans)
+     echo "graph_title OpenConnect: IP bans"
+     echo "graph_vlabel bans"
+     echo "graph_printf %2.0lf"
+     echo "bans.label bans"
+     echo "bans.colour F6CB1C"
+     exit 0;;
+   *)
+      echo "Unknown method: please create symlinks as ocserv_traffic, ocserv_bans, ocserv_sessions" >&2
+      exit 255;;
+  esac
+fi
+
+getPreviousCounters()
+{
+  if [[ -f "${old_values_file}" ]];
+  then
+    old_values=$(cat "${old_values_file}")
+    if [[ -n "${old_values}" ]];
+    then
+      previous_up_raw=$(echo "${old_values}" | jq .raw_tx)
+      previous_down_raw=$(echo "${old_values}" | jq .raw_rx)
+    fi
+  fi
+}
+
+getAndSaveCounters()
+{
+  values=$(occtl --json show status)
+  if [[ -n "${values}" ]];
+  then
+    echo "${values}" > ${old_values_file}
+    actual_up_raw=$(echo "${values}" | jq .raw_tx)
+    actual_down_raw=$(echo "${values}" | jq .raw_rx)
+  fi
+}
+
+calculateDeltas()
+{
+  getPreviousCounters
+  getAndSaveCounters
+  if [[ -z ${previous_up_raw} || -z $actual_up_raw ]];
+  then
+    delta_up="U"
+  else
+    if [[ ${actual_up_raw} -lt ${previous_up_raw} ]];
+    then
+      previous_up_raw=0
+    fi
+    delta_up=$(( actual_up_raw - previous_up_raw ))
+  fi
+  if [[ -z ${previous_down_raw} || -z $actual_down_raw ]];
+  then
+    delta_down="U"
+  else
+    if [[ ${actual_down_raw} -lt ${previous_down_raw} ]];
+    then
+      previous_down_raw=0
+    fi
+    delta_down=$(( actual_down_raw - previous_down_raw ))
+  fi
+}
+
+
+
+case $request in
+  traffic)
+    calculateDeltas
+    echo "down.value ${delta_down}"
+    echo "up.value ${delta_up}"
+    ;;
+  sessions)
+    active_sessions_count=$(occtl -n show sessions all | tail -n +2 | wc -l)
+    valid_sessions_count=$(occtl -n show sessions valid | tail -n +2 | wc -l)
+    echo "valid.value ${valid_sessions_count}"
+    echo "sessions.value ${active_sessions_count}"
+    ;;
+  bans)
+    bans_count=$(occtl -n show ip bans | tail -n +2 | wc -l)
+    echo "bans.value ${bans_count}"
+    ;;
+esac
+

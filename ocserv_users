@@ -1,0 +1,43 @@
+#!/bin/sh
+OCSERV_USERS=/etc/ocserv/ocpasswd
+
+get_users () {
+  USERS=$(cat ${OCSERV_USERS} | grep -v '#'  | awk '{split($0,a,":"); print a[1]}')
+}
+
+get_active_users ()
+{
+ ACTIVE_USERS=$(occtl --json show sessions all | tr '\n' ' ' | sed  "s/,\s*}/ }/g" | jq -r ".[] | .Username")
+}
+
+case $1 in
+   config)
+     echo "graph_title OpenConnect: Active users"
+     echo "graph_vlabel connections"
+     echo "graph_args --base 1000 -l 0"
+     echo "graph_printf %3.0lf"
+     get_users
+     FIRST=0
+     for USER in ${USERS}
+     do
+       echo "${USER}.label ${USER}"
+       if [ "${FIRST}" -eq 1 ];
+       then
+         echo "${USER}.draw STACK"
+       else
+         echo "${USER}.draw AREA"
+         FIRST=1
+       fi
+     done
+     exit 0;;
+esac
+
+
+get_users
+get_active_users
+
+for USER in ${USERS}
+do
+  echo "${USER}.value $(echo "${ACTIVE_USERS}" | grep -w "${USER}" | wc -l)"
+done
+

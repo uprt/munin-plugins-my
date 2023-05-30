@@ -1,0 +1,239 @@
+#!/bin/bash
+set -Eeo pipefail
+
+fallback_host="localhost"
+fallback_port="7650"
+fallback_password="itoopie"
+
+status_cache_file="/tmp/munin_i2pd_cache"
+status_cache_expiration=1 # minutes
+
+
+if [[ -z "${host}" ]];
+then
+  host=${fallback_host}
+fi
+if [[ -z "${port}" ]];
+then
+  port=${fallback_port}
+fi
+if [[ -z "${password}" ]];
+then
+  password=${fallback_password}
+fi
+
+request=$(basename "$0" | sed 's/^i2pd_//g')
+
+if ! command -v jq &> /dev/null
+then
+    echo "'jq' not be found, please install it!"  >&2
+    exit 255
+fi
+
+printStatusConfig()
+{
+  echo "$1.label $2"
+  echo "$1.info $2"
+  if [[ $1 != "ok" ]];
+  then
+    echo "$1.draw AREA"
+  fi
+  if [[ $3 == "1" ]];
+  then
+    echo "$1.warning 1"
+  fi
+  if [[ $3 == "2" ]];
+  then
+    echo "$1.critical 1"
+  fi
+}
+
+if [[ $1 == "suggest" ]];
+then
+  echo "traffic"
+  echo "transports"
+  echo "successrate"
+  echo "transits"
+  exit 0
+fi
+
+
+if [[ $1 == "config" ]];
+then
+  case $request in
+    traffic)
+      echo "graph_title I2Pd: Traffic"
+      echo "graph_args --base 1000"
+      echo "graph_vlabel bits/s"
+      echo "down.min 0"
+      echo "down.label bps in"
+      echo "down.type DERIVE"
+      echo "down.cdef down,8,*"
+      echo "up.label bps out"
+      echo "up.type DERIVE"
+      echo "up.min 0"
+      echo "up.cdef up,8,*"
+      exit 0;;
+    routers)
+      echo "graph_title I2Pd: Routers online"
+      echo "graph_vlabel routers"
+      echo "routers.label routers"
+      echo "routers.colour 4488CC"
+      echo "routers.draw AREA"
+      exit 0;;
+    successrate)
+      echo "graph_title I2Pd: Success rate"
+      echo "graph_vlabel %"
+      echo "successes.label success rate"
+      echo "successes.warning 20:"
+      echo "successes.critical 5:"
+      echo "graph_args --base 1000 -r -l 0 -u 100"
+      exit 0;;
+    transits)
+      echo "graph_title I2Pd: Transit tunnels"
+      echo "graph_vlabel tunnels"
+      echo "transits.label transits"
+      echo "transits.colour 76D05A"
+      exit 0;;
+    status)
+      echo "graph_title I2Pd: Status"
+      echo "graph_args --base 1000 -r"
+      echo "graph_printf %2.0lf"
+      echo "graph_vlabel Status (1=active)"
+      echo "graph_scale no"
+      printStatusConfig "ok" "OK" 0
+      printStatusConfig "hidden" "Hidden" 0
+      printStatusConfig "testing" "Testing" 0
+      printStatusConfig "fw" "Firewalled" 0
+      printStatusConfig "fw_fast" "Warning: firewalled and fast" 1
+      printStatusConfig "fw_ff" "Warning: firewalled and floodfill" 1
+      printStatusConfig "fw_intcp" "Warning: firewalled and inbound tcp" 1
+      printStatusConfig "fw_udp" "Warning: firewalled and disabled udp" 1
+      printStatusConfig "err_i2cp" "Error: I2CP" 2
+      printStatusConfig "err_clock" "Error: Clock skew" 2
+      printStatusConfig "err_privatetcp" "Error: Private TCP address" 2
+      printStatusConfig "err_symnat" "Error: Symmetric NAT" 2
+      printStatusConfig "err_udpport" "Error: UDP port in use" 2
+      printStatusConfig "err_nopeers" "Error: No active peers, check needed" 2
+      printStatusConfig "err_mess" "Error: UDP disabled, TCP unset" 2
+      exit 0;;
+    *)
+      echo "Unknown method: please create symlinks as i2pd_traffic, i2pd_transports, i2pd_successrate, i2pd_transits" >&2
+      exit 255;;
+  esac
+fi
+
+
+getToken()
+{
+  auth_reply=$(/usr/bin/curl -k -s --data-binary "{
+            \"jsonrpc\":\"2.0\",
+            \"id\":$(date +%s%N),
+            \"method\":\"Authenticate\",
+            \"params\":{
+                \"API\": 1,
+                \"Password\": \"${password}\"}
+            }" -H 'content-type:application/json-rpc;' "https://${host}:${port}/")
+  token=$(echo "${auth_reply}" | jq --raw-output '.result.Token')
+}
+
+
+updateStatus()
+{
+  getToken
+  router_info=$(/usr/bin/curl -s -k --data-binary "{
+              \"jsonrpc\":\"2.0\",
+              \"id\":$(date +%s%N),
+              \"method\":\"RouterInfo\",
+              \"params\":{
+                  \"i2p.router.net.total.received.bytes\": \"null\",
+                  \"i2p.router.net.total.sent.bytes\": \"null\",
+                  \"i2p.router.net.status\": \"null\",
+                  \"i2p.router.net.tunnels.participating\": \"null\",
+                  \"i2p.router.netdb.activepeers\": \"null\",
+                  \"i2p.router.netdb.knownpeers\": \"null\",
+                  \"i2p.router.net.tunnels.successrate\": \"null\",
+                  \"Token\": \"$token\"}
+              }" -H 'content-type:application/json-rpc;' "https://${host}:${port}/")
+  if  [ -z "$router_info" ]; then
+    echo "Failed to get/parse router info" >&2
+    exit 255
+  fi
+  echo "${router_info}" > ${status_cache_file}
+}
+
+getRouterInfo()
+{
+  # check if we already have fresh data in cache
+  if [[ $(find "${status_cache_file}" -mmin -${status_cache_expiration} -print) ]];
+  then
+    router_info=$(cat ${status_cache_file})
+  else
+    updateStatus
+  fi
+}
+
+printStatus()
+{
+  local currentStatus=$1
+  local desiredStatus=$2
+  local name=$3
+
+  if [[ "${currentStatus}" == "${desiredStatus}" ]];
+  then
+    echo "${name}.value 1"
+  else
+    echo "${name}.value 0"
+  fi
+}
+
+getRouterInfo
+
+case $request in
+  traffic)
+    received=$(echo "${router_info}" | jq --raw-output '.result."i2p.router.net.total.received.bytes"')
+    sent=$(echo "${router_info}" | jq --raw-output '.result."i2p.router.net.total.sent.bytes"')
+    printf "down.value "
+    echo "${received}"
+    printf "up.value "
+    echo "${sent}"
+    exit 0;;
+  routers)
+    routers=$(echo "${router_info}" | jq --raw-output '.result."i2p.router.netdb.knownpeers"')
+    printf "routers.value "
+    echo "${routers}"
+    exit 0;;
+  successrate)
+    success_rate=$(echo "${router_info}" | jq --raw-output '.result."i2p.router.net.tunnels.successrate"')
+    printf "successes.value "
+    echo "${success_rate}"
+    exit 0;;
+  transits)
+    transits=$(echo "${router_info}" | jq --raw-output '.result."i2p.router.net.tunnels.participating"')
+    printf "transits.value "
+    echo "${transits}"
+    exit 0;;
+  status)
+    status=$(echo "${router_info}" | jq --raw-output '.result."i2p.router.net.status"')
+    printStatus "${status}" 0 "ok"
+    printStatus "${status}" 1 "testing"
+    printStatus "${status}" 2 "fw"
+    printStatus "${status}" 3 "hidden"
+    printStatus "${status}" 4 "fw_fast"
+    printStatus "${status}" 5 "fw_ff"
+    printStatus "${status}" 6 "fw_intcp"
+    printStatus "${status}" 7 "fw_udp"
+    printStatus "${status}" 8 "err_i2cp"
+    printStatus "${status}" 9 "err_clock"
+    printStatus "${status}" 10 "err_privatetcp"
+    printStatus "${status}" 11 "err_symnat"
+    printStatus "${status}" 12 "err_udpport"
+    printStatus "${status}" 13 "err_nopeers"
+    printStatus "${status}" 14 "err_mess"
+    exit 0;;
+  *)
+    echo "Unknown method: please create symlinks as i2pd_traffic, i2pd_transports, i2pd_successrate, i2pd_transits"
+    exit 255;;
+esac
+
+

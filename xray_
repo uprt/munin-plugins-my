@@ -1,0 +1,132 @@
+#!/bin/bash
+set -Eeo pipefail
+
+fallback_cmd="/opt/xray/xray api statsquery"
+fallback_server="127.0.0.1:5001"
+fallback_config="/opt/xray/config.json"
+
+if [[ -z "${cmd}" ]];
+then
+  cmd=${fallback_cmd}
+fi
+
+if [[ -z "${server}" ]];
+then
+  server=${fallback_server}
+fi
+
+if [[ -z "${config}" ]];
+then
+  config=${fallback_config}
+fi
+
+request=$(basename "$0" | sed 's/^xray_//g')
+
+if ! command -v jq &> /dev/null
+then
+    echo "'jq' not found, please install it!"  >&2
+    exit 255
+fi
+
+if ! command -v md5sum &> /dev/null
+then
+    echo "'md5sum' not found, please install it!"  >&2
+    exit 255
+fi
+
+first=0
+printTagConfig()
+{
+    echo "${1}_dl.min 0"
+    echo "${1}_dl.graph no"
+    echo "${1}_dl.label ${2}"
+    echo "${1}_dl.type DERIVE"
+    echo "${1}_dl.cdef ${1}_dl,8,*"
+    if [[ $first -eq 0 ]];
+    then
+      echo "${1}_dl.draw AREA"
+      true
+    else
+      echo "${1}_dl.draw STACK"
+    fi
+    echo "${1}_ul.label ${2}"
+    echo "${1}_ul.type DERIVE"
+    echo "${1}_ul.negative ${1}_dl"
+    echo "${1}_ul.min 0"
+    echo "${1}_ul.cdef ${1}_ul,8,*"
+    if [[ $first -eq 0 ]];
+    then
+      true
+      echo "${1}_ul.draw AREA"
+    else
+      echo "${1}_ul.draw STACK"
+    fi
+    first=1
+}
+
+if [[ ${request} == "user" ]]
+then
+  tags=$(cat ${config} | jq -r "[.inbounds[] | .settings | .clients[]? | .email] | unique | .[]")
+fi
+
+if [[ ${request} == "inbound" ]]
+then
+  tags=$(cat /opt/xray/config.json | jq -r "[.inbounds[] | .tag] | unique | .[]")
+fi
+
+if [[ ${request} == "outbound" ]]
+then
+  tags=$(cat /opt/xray/config.json | jq -r "[.outbounds[] | .tag] | unique | .[]")
+fi
+
+stats=$($cmd  -server=${server} -pattern "${request}")
+
+getOrder()
+{
+  order=""
+  for tag in ${tags}
+  do
+    hashedTag=$(echo ${tag} | md5sum | head -c8)
+    order="${order} x${hashedTag}"
+  done
+}
+
+if [[ $1 == "config" ]];
+then
+    getOrder
+    echo "graph_title Traffic per ${request}"
+    echo "graph_order ${order}"
+    echo "graph_args --base 1000"
+    echo "graph_vlabel bits in (-) / out (+) per ${graph_period}"
+    for tag in ${tags}
+    do
+      hashedTag=$(echo ${tag} | md5sum | head -c8)
+      printTagConfig x$hashedTag $tag
+    done
+    exit 0
+fi
+
+
+printTagTraffic()
+{
+  jsonName="${1}>>>${2}>>>traffic>>>${3}";
+  value=$(echo $stats | jq '.stat[] | select(.name == '\"${jsonName}\"') | .value')
+  if [[ -z ${value} ]]
+  then
+    echo "0"
+  else
+    ## not dangerous, we trust the content of the config file
+    eval valueClear=${value}
+    echo ${valueClear}
+  fi
+}
+
+for tag in ${tags}
+do
+  hashedTag=$(echo ${tag} | md5sum | head -c8)
+  printf "x${hashedTag}_dl.value "
+  printTagTraffic ${request} ${tag} downlink
+  printf "x${hashedTag}_ul.value "
+  printTagTraffic ${request} ${tag} uplink
+done
+

@@ -1,0 +1,45 @@
+#!/bin/sh
+OCSERV_CONFIG=/etc/ocserv/ocserv.conf
+
+get_vhosts () {
+  VHOSTS=$(cat ${OCSERV_CONFIG} |  grep -v '#' | sed -nE 's/^\[vhost:(.*)\]$/\1/p')
+}
+
+get_active_sessions_vhosts ()
+{
+ ACTIVE_VHOSTS=$(occtl --json show sessions all | tr '\n' ' ' | sed  "s/,\s*}/ }/g" | jq -r ".[] | .vhost")
+}
+
+case $1 in
+   config)
+     echo "graph_title OpenConnect: Active sessions per vhost"
+     echo "graph_vlabel sessions"
+     echo "graph_args --base 1000 -l 0"
+     echo "graph_printf %3.0lf"
+     get_vhosts
+     FIRST=0
+     for VHOST in ${VHOSTS}
+     do
+       VHOST_TIDY=$(echo ${VHOST} | tr -c -s '[:alnum:][:space:]' '_')
+       echo "${VHOST_TIDY}.label ${VHOST}"
+       if [ "${FIRST}" -eq 1 ];
+       then
+         echo "${VHOST_TIDY}.draw STACK"
+       else
+         echo "${VHOST_TIDY}.draw AREA"
+         FIRST=1
+       fi
+     done
+     exit 0;;
+esac
+
+
+get_vhosts
+get_active_sessions_vhosts
+
+for VHOST in ${VHOSTS}
+do
+  VHOST_TIDY=$(echo ${VHOST} | tr -c -s '[:alnum:][:space:]' '_')
+  echo "${VHOST_TIDY}.value $(echo "${ACTIVE_VHOSTS}" | grep "${VHOST}" | wc -l)"
+done
+

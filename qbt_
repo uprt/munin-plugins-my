@@ -1,0 +1,141 @@
+#!/bin/bash
+set -Eeo pipefail
+
+fallback_host="localhost"
+fallback_port="55556"
+
+
+if [[ -z "${host}" ]];
+then
+  host=${fallback_host}
+fi
+if [[ -z "${port}" ]];
+then
+  port=${fallback_port}
+fi
+
+request=$(basename "$0" | sed 's/^qbt_//g')
+
+if ! command -v jq &> /dev/null
+then
+    echo "'jq' not found, please install it!"  >&2
+    exit 255
+fi
+
+if [[ $1 == "suggest" ]];
+then
+  echo "traffic"
+  echo "transfers"
+  exit 0
+fi
+
+
+if [[ $1 == "config" ]];
+then
+  case $request in
+    traffic)
+      echo "graph_order down up"
+      echo "graph_title QBittorrent: Traffic"
+      echo "graph_args --base 1000"
+      echo "graph_vlabel bits in (-) / out (+) per ${graph_period}"
+      echo "down.min 0"
+      echo "down.graph no"
+      echo "down.label bps"
+      echo "down.type DERIVE"
+      echo "down.cdef down,8,*"
+      echo "up.label bps"
+      echo "up.type DERIVE"
+      echo "up.negative down"
+      echo "up.min 0"
+      echo "up.cdef up,8,*"
+      exit 0;;
+    transfers)
+      echo "graph_title QBittorrent: Transfers"
+      echo "graph_vlabel number of transfers"
+      echo "graph_printf %2.0lf"
+      echo "downloading.label downloading"
+      echo "downloading.draw AREA"
+      echo "seeding.label seeding"
+      echo "seeding.draw STACK"
+      echo "stalleddown.label stalled (down)"
+      echo "stalleddown.draw STACK"
+      echo "stalledup.label stalled (seed)"
+      echo "stalledup.draw STACK"
+      echo "queued.label queued"
+      echo "queued.draw STACK"
+      echo "paused.label paused"
+      echo "paused.draw STACK"
+      echo "moving.label moving"
+      echo "moving.draw STACK"
+      echo "error.label error"
+      echo "error.draw STACK"
+      echo "other.label other"
+      echo "other.draw STACK"
+      exit 0;;
+    *)
+      echo "Unknown method: please create symlinks as qbt_traffic, qbt_torrents" >&2
+      exit 255;;
+  esac
+fi
+
+
+
+case $request in
+  traffic)
+    json=$(curl http://${host}:${port}/api/v2/transfer/info)
+    up=$(echo ${json} | jq -r '.up_info_data')
+    down=$(echo ${json} | jq -r '.dl_info_data')
+    echo "down.value ${down}"
+    echo "up.value ${up}"
+    exit 0;;
+  transfers)
+    downloading=0
+    seeding=0
+    error=0
+    missing=0
+    paused=0
+    queued=0
+    stalledup=0
+    stalleddown=0
+    moving=0
+    other=0
+    json=$(curl http://${host}:${port}/api/v2/torrents/info)
+    states=$(echo ${json} | jq -r '.[].state')
+    for state in ${states}; do
+      case ${state} in
+        error)
+          ((error+=1));;
+        missingFiles)
+          ((missing+=1));;
+        uploading | forcedUP | checkingUP)
+          ((seeding+=1));;
+        downloading | forcedSL | allocating | metaDL | checkingDL)
+         ((downloading+=1));;
+        pausedUP | pausedDL)
+          ((paused+=1));;
+        queuedUP | queuedDL)
+          ((queued+=1));;
+        stalledUP)
+          ((stalledup+=1));;
+        stalledDL)
+          ((stalleddown+=1));;
+        *)
+          ((other+=1));;
+      esac
+    done
+    echo "downloading.value ${downloading}"
+    echo "seeding.value ${seeding}"
+    echo "error.value ${error}"
+    echo "missing.value ${missing}"
+    echo "paused.value ${paused}"
+    echo "queued.value ${queued}"
+    echo "stalledup.value ${stalledup}"
+    echo "stalleddown.value ${stalleddown}"
+    echo "moving.value ${moving}"
+    echo "other.value ${other}"
+    ;;
+  *)
+    echo "Unknown method: please create symlinks as qbt_transfers or qbt_traffic"
+    exit 255;;
+esac
+
