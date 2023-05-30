@@ -18,7 +18,7 @@ Parameters: env.host (localhost), env.port (7650), env.password (itoopie)
 
 ![Traffic](docs/i2pd_traffic-day.png?raw=true "Traffic")
 
-![Transit tunnels](docs/i2pd_transits-day.png.png?raw=true "Transit tunnels")
+![Transit tunnels](docs/i2pd_transits-day.png?raw=true "Transit tunnels")
 
 # OpenConnect VPN server
 Munin plugin for OpenConnect VPN server (OCsev - https://gitlab.com/openconnect/ocserv)
